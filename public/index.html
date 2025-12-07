@@ -201,7 +201,7 @@
         }
         if (isCaller) {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log("✅ RemoteDescription(Answer) 설정");
+          console.log("RemoteDescription(Answer) 설정");
         }
       });
 
@@ -213,7 +213,7 @@
         if (pc && pc.remoteDescription && pc.remoteDescription.type) {
           try {
             await pc.addIceCandidate(iceCandidate);
-            console.log("✅ ICE 후보 추가 완료");
+            console.log("ICE 후보 추가 완료");
           } catch (e) {
             console.error("ICE 후보 추가 실패:", e);
           }
@@ -227,7 +227,7 @@
         if (pc && pc.remoteDescription && pc.remoteDescription.type) {
           try {
             await pc.addIceCandidate(iceCandidate);
-            console.log("✅ ICE 후보 추가 완료");
+            console.log("ICE 후보 추가 완료");
           } catch (e) {
             console.error("ICE 후보 추가 실패:", e);
           }
@@ -263,7 +263,7 @@
         }
         if (!text) return;
         dataChannel.send(text);
-        console.log("💬 DataChannel 메시지 전송:", text);
+        console.log("DataChannel 메시지 전송:", text);
 
         const p = document.createElement("p");
         p.textContent = "Me: " + text;

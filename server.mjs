@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, "public")));
 
 io.on("connection", (socket) => {
-  console.log("✅ WebSocket 연결됨:", socket.id);
+  console.log("WebSocket 연결됨:", socket.id);
 
   // Caller → Server → Remote 로 Offer 전달
   socket.on("offer", (sentoffer) => {
