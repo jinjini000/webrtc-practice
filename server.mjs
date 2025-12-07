@@ -64,5 +64,5 @@ io.on("connection", (socket) => {
 });
 
 server.listen(3000, "0.0.0.0", () => {
-  console.log("🚀 서버 실행중: http://localhost:3000");
+  console.log("서버 실행중: http://localhost:3000");
 });
