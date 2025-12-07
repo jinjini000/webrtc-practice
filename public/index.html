@@ -35,6 +35,22 @@
     <div class="messagebox" id="receivebox">
       <p>Messages received:</p>
     </div>
+    <div id="video-container">
+      <video
+        style="height: 300px; width: 300px; border: 1px solid black"
+        id="localVideo"
+        autoplay
+        playsinline
+        muted
+      ></video>
+
+      <video
+        style="height: 300px; width: 300px; border: 1px solid black"
+        id="remoteVideo"
+        autoplay
+        playsinline
+      ></video>
+    </div>
     <script src="/socket.io/socket.io.js"></script>
     <script>
       const socket = io();
@@ -44,6 +60,10 @@
       const message = document.getElementById("message");
       const sendButton = document.getElementById("sendButton");
       const receivebox = document.getElementById("receivebox");
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+      let isCaller = false;
+      let isRemoter = false;
       let Channel;
       let localConnection;
       let remoteConnection;
@@ -52,17 +72,34 @@
       remoteButton.addEventListener("click", makeRemote);
 
       // 방을 만드는 사람
-      function makeCall() {
+      async function makeCall() {
+        isCaller = true;
+        isRemoter = false;
         // 1. 로컬 커넥션객체 생성
         localConnection = new RTCPeerConnection({
           iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
         });
+
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+
+        localStream
+          .getTracks()
+          .forEach((track) => localConnection.addTrack(track, localStream));
+        localConnection.addStream(localStream);
+
+        localVideo.srcObject = localStream;
+
         console.log("로컬커넥션 객체 생성완료!: ", localConnection);
         // 2. 데이터채널 생성
         DataChannel = localConnection.createDataChannel("Channel_1");
         console.log("채널 객체: ", DataChannel);
 
         // 3. 로컬 연결에서 Offer 생성하고 중계서버로 전송
+
+        console.log("오퍼생성시작!");
         localConnection
           .createOffer()
           .then((offer) => {
@@ -79,6 +116,11 @@
           console.log("데이터채널 열림!");
         });
 
+        localConnection.addEventListener("track", async (event) => {
+          const [remoteStream] = event.streams;
+          remoteVideo.srcObject = remoteStream;
+        });
+
         // 메세지가 수신될때 실행됨
         DataChannel.addEventListener("message", (event) => {
           console.log("local: 아무튼 수신함!");
@@ -92,10 +134,20 @@
           DataChannel.send(text);
           console.log(text);
         });
+
+        // 15. ICE 후보(로컬커넥션 객체가 생성될때 또는 ICE가 바뀔때)를 서버로 보내줌
+        localConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("callIceCandidate", event.candidate);
+            console.log("ice후보 보냄!", event.candidate);
+          }
+        };
       }
 
       // 입장 하고싶은 사람
       async function makeRemote() {
+        isCaller = false;
+        isRemoter = true;
         console.log("리모트눌림");
 
         // 5. 오퍼를 받기위한 요청
@@ -103,7 +155,7 @@
 
         socket.on("sendOfferFromServer", async (offer) => {
           // 7. 리모트커넥션(입장자 전용 커넥션객체)를 만듦
-          const remoteConnection = new RTCPeerConnection({
+          remoteConnection = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
           });
 
@@ -111,6 +163,20 @@
             // 8. 커넥션에 리모트정보(입장자 기준 상대방)에 받은 오퍼를 저장
             await remoteConnection.setRemoteDescription(offer);
             console.log("Remote Description (Offer) 설정 완료.");
+
+            localStream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false,
+            });
+
+            localStream
+              .getTracks()
+              .forEach((track) =>
+                remoteConnection.addTrack(track, localStream)
+              );
+            remoteConnection.addStream(localStream);
+
+            localVideo.srcObject = localStream;
 
             // 9. Answer 생성
             const answer = await remoteConnection.createAnswer();
@@ -126,13 +192,20 @@
             console.error("WebRTC Answer 생성 및 설정 중 오류 발생:", error);
           }
 
+          socket.emit("callIceCandidate");
+
           remoteConnection.onicecandidate = (event) => {
             if (event.candidate) {
               // Answer를 받은 Call 피어에게 ICE 후보를 전송합니다.
-              socket.emit("iceCandidate", event.candidate);
+              socket.emit("remoteIceCandidate", event.candidate);
               console.log("Remote: ice후보 보냄!", event.candidate);
             }
           };
+
+          remoteConnection.addEventListener("track", async (event) => {
+            const [remoteStream] = event.streams;
+            remoteVideo.srcObject = remoteStream;
+          });
 
           remoteConnection.ondatachannel = (event) => {
             console.log("Remote: Data Channel 수신함!");
@@ -164,29 +237,27 @@
         if (localConnection) {
           console.log("answer 받았음!");
           localConnection.setRemoteDescription(answer);
-
-          // 15. ICE 후보(로컬커넥션 객체가 생성될때 또는 ICE가 바뀔때)를 서버로 보내줌
-          localConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-              socket.emit("iceCandidate", event.candidate);
-              console.log("ice후보 보냄!", event.candidate);
-            }
-          };
         } else {
           console.log("로컬 커넥션 없음!");
         }
       });
 
       // 17. 서버로 부터 받은 ICE정보를 이용자에 맞게 저장함
-      socket.on("iceCandidateFromServer", async (ice) => {
-        if (localConnection) {
-          await localConnection.addIceCandidate(ice);
-          console.log("로컬커넥션에 ice후보 저장완료!");
-        } else if (remoteConnection) {
+      socket.on("sendIceToRemoter", async (ice) => {
+        try {
           await remoteConnection.addIceCandidate(ice);
-          console.log("리모트커넥션에 ice후보 저장완료!");
-        } else {
-          console.log("커넥션없음!");
+          console.log("리모트커넥션에 ice 저장!", ice);
+        } catch (error) {
+          console.log("리모트 커낵션 없음!", error);
+        }
+      });
+
+      socket.on("sendIceToCaller", async (ice) => {
+        try {
+          await localConnection.addIceCandidate(ice);
+          console.log("로컬커넥션에 ice 저장!", ice);
+        } catch (error) {
+          console.log("로컬 커넥션 없음!");
         }
       });
 

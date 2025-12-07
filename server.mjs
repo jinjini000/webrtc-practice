@@ -16,6 +16,8 @@ app.use(express.static(path.join(__dirname, "public")));
 
 let offer = {};
 let answer = {};
+let callIceCandidate;
+let remoteIceCandidate;
 
 io.on("connection", (socket) => {
   console.log("웹소켓 연결완료");
@@ -42,12 +44,28 @@ io.on("connection", (socket) => {
     socket.broadcast.emit("sendAnswerFromServer", answer);
   });
 
-  // 16. 받은 ice를 뿌려줌
-  socket.on("iceCandidate", (ice) => {
-    socket.broadcast.emit("iceCandidateFromServer", ice);
+  // 16. 받은 ice저장및 뿌려줌
+  socket.on("callIceCandidate", (ice) => {
+    if (ice) {
+      callIceCandidate = ice;
+      console.log("콜러 ice 저장함!");
+    }
+    console.log("콜러 ice 받음!");
+    socket.emit("sendIceToRemoter", callIceCandidate);
+    socket.broadcast.emit("sendIceToRemoter", callIceCandidate);
+  });
+
+  socket.on("remoteIceCandidate", (ice) => {
+    if (ice) {
+      remoteIceCandidate = ice;
+      console.log("리모터 ice 저장함!");
+    }
+    console.log("리모터 ice 받음!");
+    socket.emit("sendIceToCaller", remoteIceCandidate);
+    socket.broadcast.emit("sendIceToCaller", remoteIceCandidate);
   });
 });
 
-server.listen(3000, () => {
+server.listen(3000, "0.0.0.0", () => {
   console.log("서버 실행중");
 });
