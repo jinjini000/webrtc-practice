@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC Test</title>
+    <link rel="stylesheet" href="chat.css" />
+  </head>
+  <body>
+    <div class="chat-container">
+      <h1 class="title">대화방</h1>
+
+      <!-- 메시지 입력 -->
+      <div class="messagebox">
+        <label for="message">메시지 입력</label>
+        <div class="message-input-row">
+          <input
+            type="text"
+            id="message"
+            placeholder="메시지를 입력하세요"
+            maxlength="120"
+          />
+          <button id="sendButton">전송</button>
+        </div>
+      </div>
+
+      <!-- 메시지 수신 -->
+      <div class="receive-area" id="receivebox">
+        <p class="receive-title">받은 메시지</p>
+      </div>
+
+      <!-- 화상 영역 -->
+      <div class="video-container">
+        <div class="video-box">
+          <p class="video-label">내 영상</p>
+          <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+        <div class="video-box">
+          <p class="video-label">상대 영상</p>
+          <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+      </div>
+      <button id="disconnect">연결끊기</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let nickname;
+      let room;
+      let IsCaller;
+
+      window.onload = () => {
+        nickname = localStorage.getItem("nickname");
+        room = localStorage.getItem("room");
+        IsCaller = JSON.parse(localStorage.getItem("IsCaller"));
+
+        if (IsCaller) {
+          console.log(nickname);
+          startCall(room);
+        } else if (!IsCaller) {
+          prepareRemote();
+        }
+      };
+
+      const messageInput = document.getElementById("message");
+      const sendButton = document.getElementById("sendButton");
+      const receivebox = document.getElementById("receivebox");
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const disconnectBtn = document.getElementById("disconnect");
+
+      let pc = null; // RTCPeerConnection
+      let localStream = null;
+      let remoteStream = null;
+      let dataChannel = null;
+      let isCaller = false;
+
+      sendButton.addEventListener("click", sendMessage);
+      disconnectBtn.addEventListener("click", () => {
+        pc.close();
+      });
+
+      // ===================== 공통: PeerConnection 생성 =====================
+
+      function createPeerConnection(room) {
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        });
+
+        console.log("PeerConnection 생성");
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            console.log("ICE Candidate 전송:", event.candidate, isCaller);
+            socket.emit("ice-candidate", event.candidate, isCaller, room);
+          }
+        };
+
+        pc.ontrack = (event) => {
+          console.log("Remote track 수신:", event.streams);
+          if (!remoteStream) {
+            remoteStream = new MediaStream();
+            remoteVideo.srcObject = remoteStream;
+          }
+          event.streams[0].getTracks().forEach((track) => {
+            remoteStream.addTrack(track);
+          });
+        };
+
+        pc.ondatachannel = (event) => {
+          console.log("DataChannel 수신");
+          dataChannel = event.channel;
+          setupDataChannel();
+        };
+      }
+
+      async function getLocalStream() {
+        try {
+          if (localStream) return;
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          localVideo.srcObject = localStream;
+          console.log("Local stream 얻음");
+        } catch (e) {
+          console.log(e);
+          console.log("아마 캠, 오디오 없음!");
+        }
+      }
+
+      function addLocalTracks() {
+        if (!localStream || !pc) return;
+        localStream.getTracks().forEach((track) => {
+          pc.addTrack(track, localStream);
+        });
+      }
+
+      // ===================== Caller: 방 만드는 쪽 =====================
+
+      async function startCall(room) {
+        isCaller = true;
+        console.log("Caller 시작");
+
+        await getLocalStream();
+        createPeerConnection(room);
+        addLocalTracks();
+
+        // Caller 가 DataChannel 생성
+        dataChannel = pc.createDataChannel("chat");
+        setupDataChannel();
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        console.log("Offer 전송");
+        socket.emit("offer", offer, room);
+      }
+
+      // ===================== Remote: 입장하는 쪽 =====================
+
+      async function prepareRemote(room) {
+        isCaller = false;
+        // Remote 가 Offer 처음 받을 때 PeerConnection / LocalStream 준비
+
+        await getLocalStream();
+        createPeerConnection(room);
+        addLocalTracks();
+
+        console.log("Remote 모드 대기 (offer 기다리는 중)");
+        socket.emit("getOffer");
+      }
+
+      // 서버에서 sendOffer 수신 → Remote가 처리
+      socket.on("sendOffer", async (offer) => {
+        console.log("Offer 수신");
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log("RemoteDescription(Offer) 설정");
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log("Answer 전송");
+        socket.emit("answer", answer);
+
+        // remoteDescription 이 설정되었으니, 대기 중이던 ICE 후보들 처리
+        socket.emit("getIceOfCaller", room);
+      });
+
+      // 서버에서 Answer 수신 → Caller가 처리
+      socket.on("sendAnswer", async (answer) => {
+        console.log("Answer 수신");
+        if (!pc) {
+          console.warn("pc 없음 (Caller가 아닌데 Answer를 받은 경우?)");
+          return;
+        }
+        if (isCaller) {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          console.log("RemoteDescription(Answer) 설정");
+        }
+      });
+
+      // 서버에서 ICE 후보 수신 (양쪽 공통)
+      socket.on("send-ice-candidate", async (candidate) => {
+        console.log("ICE Candidate 수신:", candidate);
+        const iceCandidate = new RTCIceCandidate(candidate);
+
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(iceCandidate);
+            console.log("ICE 후보 추가 완료");
+          } catch (e) {
+            console.error("ICE 후보 추가 실패:", e);
+          }
+        }
+      });
+
+      socket.on("sendIceOfCaller", async (candidate) => {
+        console.log("ICE Candidate 수신:", candidate);
+        const iceCandidate = new RTCIceCandidate(candidate);
+
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try {
+            await pc.addIceCandidate(iceCandidate);
+            console.log("ICE 후보 추가 완료");
+          } catch (e) {
+            console.error("ICE 후보 추가 실패:", e);
+          }
+        }
+      });
+
+      // ===================== DataChannel 관련 =====================
+
+      function setupDataChannel() {
+        if (!dataChannel) return;
+
+        dataChannel.onopen = () => {
+          console.log("DataChannel open");
+        };
+
+        dataChannel.onmessage = (event) => {
+          console.log("DataChannel 메시지 수신:", event.data);
+          const p = document.createElement("p");
+          p.textContent = "Remote: " + event.data;
+          receivebox.appendChild(p);
+        };
+
+        dataChannel.onclose = () => {
+          console.log("DataChannel closed");
+          location.href = "index.html";
+          socket.emit("DataChannel closed", room);
+        };
+      }
+
+      function sendMessage() {
+        const text = messageInput.value;
+        if (!dataChannel || dataChannel.readyState !== "open") {
+          alert("DataChannel 이 아직 열리지 않았습니다.");
+          return;
+        }
+        if (!text) return;
+        dataChannel.send(text);
+        console.log("DataChannel 메시지 전송:", text);
+
+        const p = document.createElement("p");
+        p.textContent = "Me: " + text;
+        receivebox.appendChild(p);
+
+        messageInput.value = "";
+      }
+    </script>
+  </body>
+</html>
